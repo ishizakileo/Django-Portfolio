@@ -1,0 +1,239 @@
+# CICD構築計画
+
+<補足>
+・対象
+  ECS: eas
+  EC2: gis, lwv, mem
+・CICDのCfnは、既存Cfnとは別でリリースできるようにする
+・リポジトリ名の命名
+  {system}-{region}-{purpose}-{component} 
+  ex. gis-apne1-ewap-batch
+
+## フェーズ1: 事前準備とインフラ基盤構築
+### マイルストーン1.1: 要件整理と設計
+- リポジトリマッピングの整理
+  - デプロイ先とリポジトリの対応表作成 （アプリチーム協力）2h
+    - 穴埋め形式で表を作成して記載を依頼する
+  - GitLabに各リポジトリを移動（アプリチーム協力）4h
+    - インフラ側で対応表通りにリポジトリを作成し、アプリチームにプッシュを依頼する ※命名規則は、補足を参照
+    
+- デプロイ要件の整理 ※まずは既存資料を確認/表形式にまとめた後、アプリチームに確認
+  - アプリケーションの起動・停止手順の確認（アプリチーム協力）2h
+  - ビルドコマンドの確認（アプリチーム協力）2h
+  - テストコマンドの確認（アプリチーム協力）2h
+  - 環境変数、各ファイルの配置要件確認（アプリチーム協力）2h
+  - バックアップ要件の確認 2h
+
+### マイルストーン1.2: GitLab/CodeCommitセットアップ
+- GitLabリポジトリのミラーリング設定
+  - CodeCommitとGitLab間のミラーリング設定 3h
+
+## フェーズ2: ビルド環境構築
+### マイルストーン2.1: EC2向けCodeBuild設定
+- buildspec.ymlのテンプレート作成
+  - ビルドコマンドの定義 2h
+  - 成果物の配置パスの定義 2h
+  - テスト実行コマンドの定義 3h
+  - 起動テンプレート最新化の定義（EC2のみ）[3] 3h
+
+### マイルストーン2.2: ECS向けCodeBuild設定
+- Dockerfileの確認と修正（アプリチーム協力）
+- buildspec.ymlの作成
+  - イメージビルドとプッシュの設定 2h
+  - タグ付けルールの定義 2h
+
+## フェーズ3: デプロイ環境構築
+### マイルストーン3.1: EC2向けCodeDeploy設定
+- appspec.ymlのテンプレート作成
+  - デプロイフックスクリプトの作成 4h
+  - アプリケーション起動スクリプトの作成（アプリチーム協力）2h
+
+- CodeDeploy環境の構築
+  - デプロイグループの作成 1h
+  - CodeDeployエージェントのインストール 2h
+
+### マイルストーン3.2: ECS向けデプロイ設定
+- 既存タスク定義の確認と検証
+  - 環境ごとのタスク定義の確認 2h
+  - イメージ参照の確認 2h
+  - 環境変数の確認 2h
+
+## フェーズ4: パイプライン構築とテスト
+### マイルストーン4.1: パイプライン構築
+- CodePipelineの作成
+  - ソース、ビルド、デプロイステージの設定 3h
+  - 承認ステージの追加 1h
+
+### マイルストーン4.2: テストとドキュメント作成
+- テストデプロイの実施
+  - 各パイプラインのテスト実行 8h
+  - ロールバック手順の確認[4] 4h
+  - 監視設定の確認 4h
+
+- ドキュメント作成
+  - アプリチーム向けリリース手順書[1] 4h
+  - 運用手順書[2] 4h
+
+## 重要なチェックポイント
+1. リポジトリマッピング確認会議（フェーズ1終了時）
+   - アプリチームとの合意形成
+   - デプロイ順序の確認
+
+2. ビルド環境レビュー（フェーズ2終了時）
+   - ビルドコマンドの検証
+   - 成果物の確認
+
+3. デプロイ手順レビュー（フェーズ3終了時）
+   - デプロイスクリプトの動作確認
+   - ロールバック手順の確認
+
+4. 総合テスト（フェーズ4終了時）
+   - エンドツーエンドテスト
+   - 障害復旧手順の確認
+--------------------------------------------
+<詳細>
+[1]アプリチーム向けデプロイガイド
+  ## 1. リポジトリ構成
+  - 必要なファイルと配置場所
+  - ブランチ運用ルール
+  - 環境別の設定ファイル管理
+
+  ## 2. デプロイ手順
+  - コードのプッシュ方法
+  - デプロイの実行方法
+  - デプロイ状態の確認方法
+
+  ## 3. ロールバック手順
+  - ロールバックが必要な状況の判断基準
+  - ロールバック実行手順
+  - 問題報告フロー
+
+[2]運用手順書
+  ## 1. 日常運用
+  - 定期的な確認項目
+  - メンテナンス手順
+  - バックアップ/リストア手順
+
+  ## 2. 障害対応
+  - 障害検知の方法
+  - 初動対応手順
+  - エスカレーションフロー
+
+  ## 3. 設定変更手順
+  - パイプライン設定の変更方法
+  - 環境変数の更新方法
+  - セキュリティ設定の変更方法
+
+[3]起動テンプレートの最新化(buildspec.ymlとScript)
+  # buildspec.yml
+  version: 0.2
+  phases:
+    post_build:
+      commands:
+        # デプロイ成功確認
+        - |
+          if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+            # 現在のインスタンスからAMIを作成
+            AMI_ID=$(aws ec2 create-image \
+              --instance-id ${INSTANCE_ID} \
+              --name "app-${ENV}-$(date +%Y%m%d-%H%M%S)" \
+              --description "Application AMI for ${ENV} environment" \
+              --no-reboot \
+              --query 'ImageId' \
+              --output text)
+            
+            # AMI作成完了を待機
+            aws ec2 wait image-available --image-ids ${AMI_ID}
+            
+            # 起動テンプレートの新バージョンを作成
+            aws ec2 create-launch-template-version \
+              --launch-template-id ${LAUNCH_TEMPLATE_ID} \
+              --source-version 1 \
+              --launch-template-data "{\"ImageId\":\"${AMI_ID}\"}"
+              
+            # 新バージョンをデフォルトに設定
+            aws ec2 modify-launch-template \
+              --launch-template-id ${LAUNCH_TEMPLATE_ID} \
+              --default-version '$Latest'
+              
+            # 古いAMIのクリーンアップ（オプション）
+            ./cleanup_old_amis.sh
+          fi
+
+  # cleanup_old_amis.sh
+  #!/bin/bash
+
+  # 保持するAMIの数
+  KEEP_IMAGES=5
+
+  # アプリケーションAMIの一覧を取得
+  IMAGES=$(aws ec2 describe-images \
+    --owners self \
+    --filters "Name=name,Values=app-${ENV}-*" \
+    --query 'Images[*].[ImageId,CreationDate,Name]' \
+    --output text | sort -k2 -r)
+
+  # 古いAMIを削除
+  COUNT=0
+  echo "$IMAGES" | while read IMAGE_ID CREATION_DATE NAME; do
+    COUNT=$((COUNT + 1))
+    if [ $COUNT -gt $KEEP_IMAGES ]; then
+      echo "Deregistering AMI: $IMAGE_ID ($NAME)"
+      aws ec2 deregister-image --image-id $IMAGE_ID
+    fi
+  done
+
+[4]ロールバック手法
+  ### 推奨するロールバックフロー
+  1. **即時対応が必要な場合**
+  - 直前のバージョンへの即時ロールバック
+  - スクリプトによる自動化
+  - 最小限の承認プロセス
+
+  2. **計画的な対応が可能な場合**
+  - GitLabを経由した通常のデプロイフロー
+  - コード修正とレビュー
+  - テスト実行による品質確保
+
+  1. **ECSの場合**
+  ```bash
+  # 即時ロールバック用スクリプト
+  #!/bin/bash
+
+  # 現在のサービス情報を取得
+  CURRENT_SERVICE=$(aws ecs describe-services \
+    --cluster ${CLUSTER_NAME} \
+    --services ${SERVICE_NAME})
+
+  # 1つ前のタスク定義を取得
+  PREVIOUS_TASK_DEFINITION=$(echo $CURRENT_SERVICE | \
+    jq -r '.services[0].taskDefinition' | \
+    sed -e 's/:[0-9]\+/:'"$(($(echo $CURRENT_SERVICE | \
+    jq -r '.services[0].taskDefinition' | \
+    cut -d: -f2) - 1))"'/')
+
+  # ロールバックを実行
+  aws ecs update-service \
+    --cluster ${CLUSTER_NAME} \
+    --service ${SERVICE_NAME} \
+    --task-definition $PREVIOUS_TASK_DEFINITION \
+    --force-new-deployment
+
+  2. **EC2の場合**
+  ```bash
+  # 即時ロールバック用スクリプト
+  #!/bin/bash
+
+  # 直前のデプロイメントIDを取得
+  PREVIOUS_DEPLOYMENT=$(aws deploy list-deployments \
+    --application-name ${APPLICATION_NAME} \
+    --deployment-group-name ${DEPLOYMENT_GROUP} \
+    --include-only-statuses Succeeded \
+    --max-items 2 | \
+    jq -r '.deployments[1]')
+
+  # ロールバックデプロイを作成
+  aws deploy create-deployment \
+    --application-name ${APPLICATION_NAME} \
+    --deployment-group-name ${DEPLOYMENT_GROUP} \
+    --revision revisionType=S3,s3Location="{bucket=${BUCKET},key=${KEY},bundleType=zip,version=${VERSION}}"
