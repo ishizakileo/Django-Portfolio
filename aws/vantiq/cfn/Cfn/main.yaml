@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Main CloudFormation template for Vantiq infrastructure using Nested Stacks'
+
+Parameters:
+  # Global Parameters
+  ResourcePrefix:
+    Type: String
+    Description: Prefix for all resource names (should include environment identifier)
+
+  ClusterName:
+    Type: String
+    Description: EKS Cluster Name
+
+  # S3 Bucket for nested templates
+  TemplateS3Bucket:
+    Type: String
+    Description: S3 bucket containing CloudFormation templates
+
+  TemplateS3Prefix:
+    Type: String
+    Description: S3 prefix for CloudFormation templates
+
+  # RDS Parameters
+  DBPassword:
+    Type: String
+    Description: Database password (leave empty to auto-generate)
+    NoEcho: true
+
+  # Bastion Parameters
+  EnableBastion:
+    Type: String
+    Description: Whether to create bastion instance
+    AllowedValues:
+      - "true"
+      - "false"
+
+  BastionAccessPublicKey:
+    Type: String
+    Description: Public key for bastion instance access
+
+  WorkerAccessPrivateKey:
+    Type: String
+    Description: Private key for accessing EKS worker nodes
+    NoEcho: true
+
+  # EKS Addon Parameters
+  EnableEBSCSIDriver:
+    Type: String
+    Description: Whether to enable EBS CSI Driver addon
+    AllowedValues:
+      - "true"
+      - "false"
+
+
+Resources:
+  # VPC Stack
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplateS3Bucket}.s3.${AWS::Region}.amazonaws.com/${TemplateS3Prefix}vpc.yaml"
+      Parameters:
+        ResourcePrefix: !Ref ResourcePrefix
+        ClusterName: !Ref ClusterName
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+  # EKS Stack
+  EKSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VPCStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplateS3Bucket}.s3.${AWS::Region}.amazonaws.com/${TemplateS3Prefix}eks.yaml"
+      Parameters:
+        ResourcePrefix: !Ref ResourcePrefix
+        ClusterName: !Ref ClusterName
+        VPCId: !GetAtt VPCStack.Outputs.VPCId
+        PublicSubnetIds: !GetAtt VPCStack.Outputs.PublicSubnetIds
+        PrivateSubnetIds: !GetAtt VPCStack.Outputs.PrivateSubnetIds
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+  # RDS Stack
+  RDSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: EKSStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplateS3Bucket}.s3.${AWS::Region}.amazonaws.com/${TemplateS3Prefix}rds.yaml"
+      Parameters:
+        ResourcePrefix: !Ref ResourcePrefix
+        ClusterName: !Ref ClusterName
+        VPCId: !GetAtt VPCStack.Outputs.VPCId
+        DBSubnetIds: !GetAtt VPCStack.Outputs.PrivateSubnetIds
+        WorkerNodeSecurityGroupId: !GetAtt EKSStack.Outputs.EKSClusterSecurityGroupId
+        DBPassword: !Ref DBPassword
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+  # Bastion Stack
+  BastionStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VPCStack
+    Condition: ShouldCreateBastion
+    Properties:
+      TemplateURL: !Sub "https://${TemplateS3Bucket}.s3.${AWS::Region}.amazonaws.com/${TemplateS3Prefix}bastion.yaml"
+      Parameters:
+        Enabled: !Ref EnableBastion
+        ResourcePrefix: !Ref ResourcePrefix
+        ClusterName: !Ref ClusterName
+        VPCId: !GetAtt VPCStack.Outputs.VPCId
+        BastionSubnetId: !GetAtt VPCStack.Outputs.PublicSubnetAZ1Id
+        BastionAccessPublicKey: !Ref BastionAccessPublicKey
+        WorkerAccessPrivateKey: !Ref WorkerAccessPrivateKey
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+  # EKS Addon Stack
+  EKSAddonStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: EKSStack
+    Condition: ShouldCreateEBSCSIDriver
+    Properties:
+      TemplateURL: !Sub "https://${TemplateS3Bucket}.s3.${AWS::Region}.amazonaws.com/${TemplateS3Prefix}eks-addon.yaml"
+      Parameters:
+        Enabled: !Ref EnableEBSCSIDriver
+        ResourcePrefix: !Ref ResourcePrefix
+        ClusterName: !Ref ClusterName
+        EKSOIDCIssuerURL: !GetAtt EKSStack.Outputs.EKSClusterOIDCIssuerURL
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+Conditions:
+  ShouldCreateBastion: !Equals [!Ref EnableBastion, "true"]
+  ShouldCreateEBSCSIDriver: !Equals [!Ref EnableEBSCSIDriver, "true"]
+
+Outputs:
+  # VPC Outputs
+  VPCId:
+    Description: VPC ID
+    Value: !GetAtt VPCStack.Outputs.VPCId
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCId"
+
+  PublicSubnetIds:
+    Description: Public subnet IDs
+    Value: !GetAtt VPCStack.Outputs.PublicSubnetIds
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetIds"
+
+  PrivateSubnetIds:
+    Description: Private subnet IDs
+    Value: !GetAtt VPCStack.Outputs.PrivateSubnetIds
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetIds"
+
+  # EKS Outputs
+  EKSClusterName:
+    Description: EKS Cluster Name
+    Value: !GetAtt EKSStack.Outputs.EKSClusterName
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterName"
+
+  EKSClusterEndpoint:
+    Description: EKS Cluster Endpoint
+    Value: !GetAtt EKSStack.Outputs.EKSClusterEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterEndpoint"
+
+  # RDS Outputs
+  DBEndpoint:
+    Description: RDS instance endpoint
+    Value: !GetAtt RDSStack.Outputs.DBEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-DBEndpoint"
+
+  # Bastion Outputs
+  BastionPublicIP:
+    Condition: ShouldCreateBastion
+    Description: Bastion public IP address
+    Value: !GetAtt BastionStack.Outputs.BastionPublicIP
+    Export:
+      Name: !Sub "${AWS::StackName}-BastionPublicIP"
+
+  # EKS Addon Outputs
+  EBSCSIDriverAddonArn:
+    Condition: ShouldCreateEBSCSIDriver
+    Description: EBS CSI Driver addon ARN
+    Value: !GetAtt EKSAddonStack.Outputs.EBSCSIDriverAddonArn
+    Export:
+      Name: !Sub "${AWS::StackName}-EBSCSIDriverAddonArn"

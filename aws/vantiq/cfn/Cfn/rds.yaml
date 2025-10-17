@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'RDS PostgreSQL instance for Keycloak'
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Description: Prefix for all resource names
+
+  ClusterName:
+    Type: String
+    Description: EKS Cluster Name
+
+  VPCId:
+    Type: String
+    Description: VPC ID for RDS instance
+
+  DBSubnetIds:
+    Type: CommaDelimitedList
+    Description: Subnet IDs for RDS instance
+
+  WorkerNodeSecurityGroupId:
+    Type: String
+    Description: Worker node security group ID to allow database access
+
+  DBPassword:
+    Type: String
+    Description: Database password (leave empty to auto-generate)
+    NoEcho: true
+
+Mappings:
+  PrefixConfig:
+    vantiq-dev:
+      DBInstanceClass: "db.t3.micro"
+      DBName: "keycloak"
+      DBUsername: "keycloak"
+      DBStorageSize: 20
+      DBStorageType: "gp3"
+      DBExposePort: 5432
+      PostgresEngineVersion: "14.9"
+    vantiq-prod:
+      DBInstanceClass: "db.r5.large"
+      DBName: "keycloak"
+      DBUsername: "keycloak"
+      DBStorageSize: 100
+      DBStorageType: "gp3"
+      DBExposePort: 5432
+      PostgresEngineVersion: "14.9"
+    vantiq-staging:
+      DBInstanceClass: "db.t3.small"
+      DBName: "keycloak"
+      DBUsername: "keycloak"
+      DBStorageSize: 50
+      DBStorageType: "gp3"
+      DBExposePort: 5432
+      PostgresEngineVersion: "14.9"
+
+Conditions:
+  AutoGeneratePassword: !Equals [!Ref DBPassword, ""]
+
+Resources:
+  # Random password for database
+  DBPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: AutoGeneratePassword
+    Properties:
+      Description: Auto-generated password for Keycloak database
+      GenerateSecretString:
+        SecretStringTemplate: !Sub 
+          - '{"username": "${username}"}'
+          - username: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBUsername]
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
+  # DB Subnet Group
+  KeycloakDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "${ResourcePrefix}-keycloak-db-subnet-group"
+      DBSubnetGroupDescription: Subnet group for Keycloak database
+      SubnetIds: !Ref DBSubnetIds
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-keycloak-db-subnet-group"
+
+  # Security Group for RDS
+  KeycloakDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ResourcePrefix}-keycloak-db-sg"
+      GroupDescription: Security group for Keycloak database
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBExposePort]
+          ToPort: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBExposePort]
+          SourceSecurityGroupId: !Ref WorkerNodeSecurityGroupId
+          Description: Allow access from EKS worker nodes
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+
+  # RDS Instance
+  KeycloakPostgreSQLDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: keycloak-postgresql
+      AllocatedStorage: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBStorageSize]
+      StorageType: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBStorageType]
+      Engine: postgres
+      EngineVersion: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PostgresEngineVersion]
+      DBInstanceClass: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBInstanceClass]
+      DBName: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBName]
+      MasterUsername: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBUsername]
+      MasterUserPassword: !If
+        - AutoGeneratePassword
+        - !Sub "{{resolve:secretsmanager:${DBPasswordSecret}:SecretString:password}}"
+        - !Ref DBPassword
+      Port: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBExposePort]
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref KeycloakDBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref KeycloakDBSecurityGroup
+      BackupRetentionPeriod: 7
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
+      AutoMinorVersionUpgrade: false
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-keycloak-postgresql"
+
+Outputs:
+  DBEndpoint:
+    Description: RDS instance endpoint
+    Value: !GetAtt KeycloakPostgreSQLDB.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-DBEndpoint"
+
+  DBPort:
+    Description: RDS instance port
+    Value: !GetAtt KeycloakPostgreSQLDB.Endpoint.Port
+    Export:
+      Name: !Sub "${AWS::StackName}-DBPort"
+
+  DBName:
+    Description: Database name
+    Value: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBName]
+    Export:
+      Name: !Sub "${AWS::StackName}-DBName"
+
+  DBUsername:
+    Description: Database username
+    Value: !FindInMap [PrefixConfig, !Ref ResourcePrefix, DBUsername]
+    Export:
+      Name: !Sub "${AWS::StackName}-DBUsername"
+
+  DBPasswordSecretArn:
+    Condition: AutoGeneratePassword
+    Description: ARN of the secret containing the database password
+    Value: !Ref DBPasswordSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-DBPasswordSecretArn"
+
+  DBSecurityGroupId:
+    Description: Security group ID for the database
+    Value: !Ref KeycloakDBSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-DBSecurityGroupId"

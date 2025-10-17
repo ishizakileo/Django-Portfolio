@@ -1,0 +1,207 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EKS EBS CSI Driver addon'
+
+Parameters:
+  Enabled:
+    Type: String
+    Description: Whether to enable EBS CSI Driver addon
+    AllowedValues:
+      - "true"
+      - "false"
+
+  ResourcePrefix:
+    Type: String
+    Description: Prefix for all resource names
+
+  ClusterName:
+    Type: String
+    Description: EKS Cluster Name
+
+  EKSOIDCIssuerURL:
+    Type: String
+    Description: EKS cluster OIDC issuer URL
+
+Mappings:
+  PrefixConfig:
+    vantiq-dev:
+      KubernetesVersion: "1.27"
+      AddonVersion: ""  # Use latest
+      ResolveConflicts: "OVERWRITE"
+      Preserve: "false"
+      AdditionalIAMPolicies: ""
+    vantiq-prod:
+      KubernetesVersion: "1.27"
+      AddonVersion: ""  # Use latest
+      ResolveConflicts: "OVERWRITE"
+      Preserve: "true"
+      AdditionalIAMPolicies: ""
+    vantiq-staging:
+      KubernetesVersion: "1.27"
+      AddonVersion: ""  # Use latest
+      ResolveConflicts: "OVERWRITE"
+      Preserve: "false"
+      AdditionalIAMPolicies: ""
+
+Conditions:
+  ShouldCreateAddon: !Equals [!Ref Enabled, "true"]
+  HasAdditionalPolicies: !And
+    - !Condition ShouldCreateAddon
+    - !Not [!Equals [!FindInMap [PrefixConfig, !Ref ResourcePrefix, AdditionalIAMPolicies], ""]]
+  ShouldPreserve: !Equals [!FindInMap [PrefixConfig, !Ref ResourcePrefix, Preserve], "true"]
+  HasCustomVersion: !Not [!Equals [!FindInMap [PrefixConfig, !Ref ResourcePrefix, AddonVersion], ""]]
+
+Resources:
+  # TLS Certificate for OIDC
+  OIDCTLSCertificate:
+    Type: Custom::TLSCertificate
+    Condition: ShouldCreateAddon
+    Properties:
+      ServiceToken: !GetAtt TLSCertificateLambda.Arn
+      URL: !Ref EKSOIDCIssuerURL
+
+  # Lambda function to get TLS certificate
+  TLSCertificateLambdaRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateAddon
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  TLSCertificateLambda:
+    Type: AWS::Lambda::Function
+    Condition: ShouldCreateAddon
+    Properties:
+      FunctionName: !Sub "${ResourcePrefix}-${ClusterName}-get-tls-certificate"
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt TLSCertificateLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import ssl
+          import socket
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  url = event['ResourceProperties']['URL']
+                  hostname = url.replace('https://', '').replace('http://', '')
+                  
+                  context_ssl = ssl.create_default_context()
+                  with socket.create_connection((hostname, 443)) as sock:
+                      with context_ssl.wrap_socket(sock, server_hostname=hostname) as ssock:
+                          cert_der = ssock.getpeercert(True)
+                          cert_pem = ssl.DER_cert_to_PEM_cert(cert_der)
+                          
+                  # Get SHA1 fingerprint
+                  import hashlib
+                  fingerprint = hashlib.sha1(cert_der).hexdigest()
+                  
+                  response_data = {
+                      'Thumbprint': fingerprint
+                  }
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+  # OIDC Identity Provider
+  OIDCProvider:
+    Type: AWS::IAM::OpenIDConnectIdentityProvider
+    Condition: ShouldCreateAddon
+    Properties:
+      Url: !Ref EKSOIDCIssuerURL
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - !GetAtt OIDCTLSCertificate.Thumbprint
+
+  # IAM Role for EBS CSI Driver Service Account (IRSA)
+  EBSCSIDriverRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateAddon
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-ebs-csi-controller-sa-irsa-${ClusterName}"
+      Description: "AWS IAM Role for the Kubernetes service account ebs-csi-controller-sa"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringLike:
+                !Sub "${EKSOIDCIssuerURL}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+                !Sub "${EKSOIDCIssuerURL}:aud": "sts.amazonaws.com"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+  # Additional IAM Policy Attachments
+  AdditionalPolicyAttachment1:
+    Type: AWS::IAM::RolePolicyAttachment
+    Condition: HasAdditionalPolicies
+    Properties:
+      PolicyArn: !Select [0, !Split [",", !FindInMap [PrefixConfig, !Ref ResourcePrefix, AdditionalIAMPolicies]]]
+      RoleName: !Ref EBSCSIDriverRole
+
+  AdditionalPolicyAttachment2:
+    Type: AWS::IAM::RolePolicyAttachment
+    Condition: HasAdditionalPolicies
+    Properties:
+      PolicyArn: !If
+        - HasAdditionalPolicies
+        - !Select [1, !Split [",", !FindInMap [PrefixConfig, !Ref ResourcePrefix, AdditionalIAMPolicies]]]
+        - !Ref AWS::NoValue
+      RoleName: !Ref EBSCSIDriverRole
+
+  # EKS Addon
+  EBSCSIDriverAddon:
+    Type: AWS::EKS::Addon
+    Condition: ShouldCreateAddon
+    Properties:
+      ClusterName: !Ref ClusterName
+      AddonName: aws-ebs-csi-driver
+      AddonVersion: !If
+        - HasCustomVersion
+        - !FindInMap [PrefixConfig, !Ref ResourcePrefix, AddonVersion]
+        - !Ref AWS::NoValue
+      ResolveConflicts: !FindInMap [PrefixConfig, !Ref ResourcePrefix, ResolveConflicts]
+      ServiceAccountRoleArn: !GetAtt EBSCSIDriverRole.Arn
+      Preserve: !Ref ShouldPreserve
+
+Outputs:
+  EBSCSIDriverAddonArn:
+    Condition: ShouldCreateAddon
+    Description: EBS CSI Driver addon ARN
+    Value: !GetAtt EBSCSIDriverAddon.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EBSCSIDriverAddonArn"
+
+  EBSCSIDriverRoleArn:
+    Condition: ShouldCreateAddon
+    Description: EBS CSI Driver IAM role ARN
+    Value: !GetAtt EBSCSIDriverRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EBSCSIDriverRoleArn"
+
+  OIDCProviderArn:
+    Condition: ShouldCreateAddon
+    Description: OIDC Provider ARN
+    Value: !Ref OIDCProvider
+    Export:
+      Name: !Sub "${AWS::StackName}-OIDCProviderArn"

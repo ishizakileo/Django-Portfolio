@@ -1,0 +1,475 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'VPC infrastructure for Vantiq cluster'
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Description: Prefix for all resource names
+
+  ClusterName:
+    Type: String
+    Description: EKS Cluster Name
+
+Mappings:
+  PrefixConfig:
+    vantiq-dev:
+      VpcCidrBlock: "172.20.0.0/16"
+      PublicSubnetAZ1Cidr: "172.20.1.0/24"
+      PublicSubnetAZ2Cidr: "172.20.2.0/24"
+      PublicSubnetAZ3Cidr: "172.20.3.0/24"
+      PrivateSubnetAZ1Cidr: "172.20.101.0/24"
+      PrivateSubnetAZ2Cidr: "172.20.102.0/24"
+      PrivateSubnetAZ3Cidr: "172.20.103.0/24"
+      PublicSubnetRole: "elb"
+      PrivateSubnetRole: "internal-elb"
+    vantiq-prod:
+      VpcCidrBlock: "172.21.0.0/16"
+      PublicSubnetAZ1Cidr: "172.21.1.0/24"
+      PublicSubnetAZ2Cidr: "172.21.2.0/24"
+      PublicSubnetAZ3Cidr: "172.21.3.0/24"
+      PrivateSubnetAZ1Cidr: "172.21.101.0/24"
+      PrivateSubnetAZ2Cidr: "172.21.102.0/24"
+      PrivateSubnetAZ3Cidr: "172.21.103.0/24"
+      PublicSubnetRole: "elb"
+      PrivateSubnetRole: "internal-elb"
+    vantiq-staging:
+      VpcCidrBlock: "172.22.0.0/16"
+      PublicSubnetAZ1Cidr: "172.22.1.0/24"
+      PublicSubnetAZ2Cidr: "172.22.2.0/24"
+      PublicSubnetAZ3Cidr: "172.22.3.0/24"
+      PrivateSubnetAZ1Cidr: "172.22.101.0/24"
+      PrivateSubnetAZ2Cidr: "172.22.102.0/24"
+      PrivateSubnetAZ3Cidr: "172.22.103.0/24"
+      PublicSubnetRole: "elb"
+      PrivateSubnetRole: "internal-elb"
+
+Resources:
+  # VPC
+  VantiqVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [PrefixConfig, !Ref ResourcePrefix, VpcCidrBlock]
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-vpc"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  # Public Subnets
+  PublicSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VantiqVPC
+      CidrBlock: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PublicSubnetAZ1Cidr]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-public-az1"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: SubnetType
+          Value: Public
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+        - Key: !Sub 
+          - "kubernetes.io/role/${SubnetRole}"
+          - SubnetRole: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PublicSubnetRole]
+          Value: "1"
+
+  PublicSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VantiqVPC
+      CidrBlock: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PublicSubnetAZ2Cidr]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-public-az2"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: SubnetType
+          Value: Public
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+        - Key: !Sub 
+          - "kubernetes.io/role/${SubnetRole}"
+          - SubnetRole: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PublicSubnetRole]
+          Value: "1"
+
+  PublicSubnetAZ3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VantiqVPC
+      CidrBlock: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PublicSubnetAZ3Cidr]
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-public-az3"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: SubnetType
+          Value: Public
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+        - Key: !Sub 
+          - "kubernetes.io/role/${SubnetRole}"
+          - SubnetRole: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PublicSubnetRole]
+          Value: "1"
+
+  # Private Subnets
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VantiqVPC
+      CidrBlock: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PrivateSubnetAZ1Cidr]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-private-az1"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: SubnetType
+          Value: Private
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+        - Key: !Sub 
+          - "kubernetes.io/role/${SubnetRole}"
+          - SubnetRole: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PrivateSubnetRole]
+          Value: "1"
+
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VantiqVPC
+      CidrBlock: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PrivateSubnetAZ2Cidr]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-private-az2"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: SubnetType
+          Value: Private
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+        - Key: !Sub 
+          - "kubernetes.io/role/${SubnetRole}"
+          - SubnetRole: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PrivateSubnetRole]
+          Value: "1"
+
+  PrivateSubnetAZ3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VantiqVPC
+      CidrBlock: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PrivateSubnetAZ3Cidr]
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-private-az3"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: SubnetType
+          Value: Private
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+        - Key: !Sub 
+          - "kubernetes.io/role/${SubnetRole}"
+          - SubnetRole: !FindInMap [PrefixConfig, !Ref ResourcePrefix, PrivateSubnetRole]
+          Value: "1"
+
+  # Internet Gateway
+  VantiqInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-igw"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VantiqVPC
+      InternetGatewayId: !Ref VantiqInternetGateway
+
+  # Elastic IPs for NAT Gateways
+  NATGatewayEIPAZ1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-eip-az1"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  NATGatewayEIPAZ2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-eip-az2"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  NATGatewayEIPAZ3:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-eip-az3"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  # NAT Gateways
+  NATGatewayAZ1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIPAZ1.AllocationId
+      SubnetId: !Ref PublicSubnetAZ1
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-natgw-az1"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  NATGatewayAZ2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIPAZ2.AllocationId
+      SubnetId: !Ref PublicSubnetAZ2
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-natgw-az2"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  NATGatewayAZ3:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIPAZ3.AllocationId
+      SubnetId: !Ref PublicSubnetAZ3
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-natgw-az3"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
+          Value: shared
+
+  # Route Tables for Public Subnets
+  PublicRouteTableAZ1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VantiqVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-public-rt-az1"
+
+  PublicRouteTableAZ2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VantiqVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-public-rt-az2"
+
+  PublicRouteTableAZ3:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VantiqVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-public-rt-az3"
+
+  # Public Routes
+  PublicRouteAZ1:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTableAZ1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref VantiqInternetGateway
+
+  PublicRouteAZ2:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTableAZ2
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref VantiqInternetGateway
+
+  PublicRouteAZ3:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTableAZ3
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref VantiqInternetGateway
+
+  # Public Subnet Route Table Associations
+  PublicSubnetRouteTableAssociationAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ1
+      RouteTableId: !Ref PublicRouteTableAZ1
+
+  PublicSubnetRouteTableAssociationAZ2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ2
+      RouteTableId: !Ref PublicRouteTableAZ2
+
+  PublicSubnetRouteTableAssociationAZ3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ3
+      RouteTableId: !Ref PublicRouteTableAZ3
+
+  # Route Tables for Private Subnets
+  PrivateRouteTableAZ1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VantiqVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-private-rt-az1"
+
+  PrivateRouteTableAZ2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VantiqVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-private-rt-az2"
+
+  PrivateRouteTableAZ3:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VantiqVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-${ClusterName}-private-rt-az3"
+
+  # Private Routes
+  PrivateRouteAZ1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAZ1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGatewayAZ1
+
+  PrivateRouteAZ2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAZ2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGatewayAZ2
+
+  PrivateRouteAZ3:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAZ3
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGatewayAZ3
+
+  # Private Subnet Route Table Associations
+  PrivateSubnetRouteTableAssociationAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ1
+      RouteTableId: !Ref PrivateRouteTableAZ1
+
+  PrivateSubnetRouteTableAssociationAZ2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ2
+      RouteTableId: !Ref PrivateRouteTableAZ2
+
+  PrivateSubnetRouteTableAssociationAZ3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ3
+      RouteTableId: !Ref PrivateRouteTableAZ3
+
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VantiqVPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCId"
+
+  PublicSubnetIds:
+    Description: Public subnet IDs
+    Value: !Join
+      - ","
+      - - !Ref PublicSubnetAZ1
+        - !Ref PublicSubnetAZ2
+        - !Ref PublicSubnetAZ3
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetIds"
+
+  PrivateSubnetIds:
+    Description: Private subnet IDs
+    Value: !Join
+      - ","
+      - - !Ref PrivateSubnetAZ1
+        - !Ref PrivateSubnetAZ2
+        - !Ref PrivateSubnetAZ3
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetIds"
+
+  PublicSubnetAZ1Id:
+    Description: Public subnet AZ1 ID
+    Value: !Ref PublicSubnetAZ1
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetAZ1Id"
+
+  PublicSubnetAZ2Id:
+    Description: Public subnet AZ2 ID
+    Value: !Ref PublicSubnetAZ2
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetAZ2Id"
+
+  PublicSubnetAZ3Id:
+    Description: Public subnet AZ3 ID
+    Value: !Ref PublicSubnetAZ3
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetAZ3Id"
+
+  PrivateSubnetAZ1Id:
+    Description: Private subnet AZ1 ID
+    Value: !Ref PrivateSubnetAZ1
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetAZ1Id"
+
+  PrivateSubnetAZ2Id:
+    Description: Private subnet AZ2 ID
+    Value: !Ref PrivateSubnetAZ2
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetAZ2Id"
+
+  PrivateSubnetAZ3Id:
+    Description: Private subnet AZ3 ID
+    Value: !Ref PrivateSubnetAZ3
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetAZ3Id"

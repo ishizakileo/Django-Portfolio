@@ -1,0 +1,377 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EKS cluster and managed node groups for Vantiq'
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Description: Prefix for all resource names
+
+  ClusterName:
+    Type: String
+    Description: EKS Cluster Name
+
+  VPCId:
+    Type: String
+    Description: VPC ID
+
+  PublicSubnetIds:
+    Type: CommaDelimitedList
+    Description: Public subnet IDs
+
+  PrivateSubnetIds:
+    Type: CommaDelimitedList
+    Description: Private subnet IDs
+
+Mappings:
+  PrefixConfig:
+    vantiq-dev:
+      ClusterVersion: "1.27"
+      WorkerAccessSSHKeyName: "vantiq-dev-worker-key"
+      VantiqInstanceTypes: "c5.xlarge"
+      VantiqDiskSize: 40
+      VantiqMinSize: 0
+      VantiqMaxSize: 6
+      VantiqDesiredSize: 1
+      MongoDBInstanceTypes: "r5.xlarge"
+      MongoDBDiskSize: 40
+      MongoDBMinSize: 0
+      MongoDBMaxSize: 6
+      MongoDBDesiredSize: 1
+      KeycloakInstanceTypes: "t3.medium"
+      KeycloakDiskSize: 40
+      KeycloakMinSize: 0
+      KeycloakMaxSize: 6
+      KeycloakDesiredSize: 1
+      GrafanaInstanceTypes: "r5.xlarge"
+      GrafanaDiskSize: 40
+      GrafanaMinSize: 0
+      GrafanaMaxSize: 6
+      GrafanaDesiredSize: 1
+      MetricsInstanceTypes: "m5.xlarge"
+      MetricsDiskSize: 40
+      MetricsMinSize: 0
+      MetricsMaxSize: 6
+      MetricsDesiredSize: 0
+      AiAssistantInstanceTypes: "c5.xlarge"
+      AiAssistantDiskSize: 40
+      AiAssistantMinSize: 0
+      AiAssistantMaxSize: 6
+      AiAssistantDesiredSize: 1
+    vantiq-prod:
+      ClusterVersion: "1.27"
+      WorkerAccessSSHKeyName: "vantiq-prod-worker-key"
+      VantiqInstanceTypes: "c5.2xlarge"
+      VantiqDiskSize: 100
+      VantiqMinSize: 1
+      VantiqMaxSize: 10
+      VantiqDesiredSize: 3
+      MongoDBInstanceTypes: "r5.2xlarge"
+      MongoDBDiskSize: 100
+      MongoDBMinSize: 1
+      MongoDBMaxSize: 6
+      MongoDBDesiredSize: 3
+      KeycloakInstanceTypes: "t3.large"
+      KeycloakDiskSize: 50
+      KeycloakMinSize: 1
+      KeycloakMaxSize: 6
+      KeycloakDesiredSize: 2
+      GrafanaInstanceTypes: "r5.2xlarge"
+      GrafanaDiskSize: 100
+      GrafanaMinSize: 1
+      GrafanaMaxSize: 6
+      GrafanaDesiredSize: 2
+      MetricsInstanceTypes: "m5.2xlarge"
+      MetricsDiskSize: 100
+      MetricsMinSize: 0
+      MetricsMaxSize: 6
+      MetricsDesiredSize: 1
+      AiAssistantInstanceTypes: "c5.2xlarge"
+      AiAssistantDiskSize: 100
+      AiAssistantMinSize: 1
+      AiAssistantMaxSize: 10
+      AiAssistantDesiredSize: 2
+    vantiq-staging:
+      ClusterVersion: "1.27"
+      WorkerAccessSSHKeyName: "vantiq-staging-worker-key"
+      VantiqInstanceTypes: "c5.xlarge"
+      VantiqDiskSize: 50
+      VantiqMinSize: 0
+      VantiqMaxSize: 6
+      VantiqDesiredSize: 2
+      MongoDBInstanceTypes: "r5.xlarge"
+      MongoDBDiskSize: 50
+      MongoDBMinSize: 0
+      MongoDBMaxSize: 6
+      MongoDBDesiredSize: 1
+      KeycloakInstanceTypes: "t3.medium"
+      KeycloakDiskSize: 40
+      KeycloakMinSize: 0
+      KeycloakMaxSize: 6
+      KeycloakDesiredSize: 1
+      GrafanaInstanceTypes: "r5.xlarge"
+      GrafanaDiskSize: 50
+      GrafanaMinSize: 0
+      GrafanaMaxSize: 6
+      GrafanaDesiredSize: 1
+      MetricsInstanceTypes: "m5.xlarge"
+      MetricsDiskSize: 50
+      MetricsMinSize: 0
+      MetricsMaxSize: 6
+      MetricsDesiredSize: 0
+      AiAssistantInstanceTypes: "c5.xlarge"
+      AiAssistantDiskSize: 50
+      AiAssistantMinSize: 0
+      AiAssistantMaxSize: 6
+      AiAssistantDesiredSize: 1
+
+Conditions:
+  HasSSHKey: !Not [!Equals [!FindInMap [PrefixConfig, !Ref ResourcePrefix, WorkerAccessSSHKeyName], ""]]
+
+Resources:
+  # Key Pair for worker nodes
+  WorkerKeyPair:
+    Type: AWS::EC2::KeyPair
+    Condition: HasSSHKey
+    Properties:
+      KeyName: !Sub "${ResourcePrefix}-${ClusterName}-eks-worker-key"
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+        - Key: instance
+          Value: eks-worker
+
+  # EKS Cluster Service Role
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-${ClusterName}-vantiq-eks-cluster-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+
+  # EKS Worker Node Role
+  EKSWorkerNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-${ClusterName}-vantiq-eks-worker-node-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  # EKS Cluster
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      Version: !FindInMap [PrefixConfig, !Ref ResourcePrefix, ClusterVersion]
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      ResourcesVpcConfig:
+        SubnetIds: !Split
+          - ","
+          - !Sub
+            - "${PublicSubnets},${PrivateSubnets}"
+            - PublicSubnets: !Join [",", !Ref PublicSubnetIds]
+              PrivateSubnets: !Join [",", !Ref PrivateSubnetIds]
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+  # VANTIQ Node Group
+  VantiqNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: VANTIQ-nodegroup
+      NodeRole: !GetAtt EKSWorkerNodeRole.Arn
+      AmiType: AL2023_x86_64_STANDARD
+      InstanceTypes: 
+        - !FindInMap [PrefixConfig, !Ref ResourcePrefix, VantiqInstanceTypes]
+      DiskSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, VantiqDiskSize]
+      Subnets: !Ref PrivateSubnetIds
+      RemoteAccess:
+        !If
+          - HasSSHKey
+          - Ec2SshKey: !Ref WorkerKeyPair
+          - !Ref AWS::NoValue
+      ScalingConfig:
+        MinSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, VantiqMinSize]
+        MaxSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, VantiqMaxSize]
+        DesiredSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, VantiqDesiredSize]
+      Labels:
+        vantiq.com/workload-preference: compute
+
+  # MongoDB Node Group
+  MongoDBNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: MongoDB-nodegroup
+      NodeRole: !GetAtt EKSWorkerNodeRole.Arn
+      AmiType: AL2023_x86_64_STANDARD
+      InstanceTypes:
+        - !FindInMap [PrefixConfig, !Ref ResourcePrefix, MongoDBInstanceTypes]
+      DiskSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MongoDBDiskSize]
+      Subnets: !Ref PrivateSubnetIds
+      RemoteAccess:
+        !If
+          - HasSSHKey
+          - Ec2SshKey: !Ref WorkerKeyPair
+          - !Ref AWS::NoValue
+      ScalingConfig:
+        MinSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MongoDBMinSize]
+        MaxSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MongoDBMaxSize]
+        DesiredSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MongoDBDesiredSize]
+      Labels:
+        vantiq.com/workload-preference: database
+
+  # Keycloak Node Group
+  KeycloakNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: Keycloak-nodegroup
+      NodeRole: !GetAtt EKSWorkerNodeRole.Arn
+      AmiType: AL2023_x86_64_STANDARD
+      InstanceTypes:
+        - !FindInMap [PrefixConfig, !Ref ResourcePrefix, KeycloakInstanceTypes]
+      DiskSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, KeycloakDiskSize]
+      Subnets: !Ref PrivateSubnetIds
+      RemoteAccess:
+        !If
+          - HasSSHKey
+          - Ec2SshKey: !Ref WorkerKeyPair
+          - !Ref AWS::NoValue
+      ScalingConfig:
+        MinSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, KeycloakMinSize]
+        MaxSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, KeycloakMaxSize]
+        DesiredSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, KeycloakDesiredSize]
+      Labels:
+        vantiq.com/workload-preference: shared
+
+  # Grafana Node Group
+  GrafanaNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: Grafana-nodegroup
+      NodeRole: !GetAtt EKSWorkerNodeRole.Arn
+      AmiType: AL2023_x86_64_STANDARD
+      InstanceTypes:
+        - !FindInMap [PrefixConfig, !Ref ResourcePrefix, GrafanaInstanceTypes]
+      DiskSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, GrafanaDiskSize]
+      Subnets: !Ref PrivateSubnetIds
+      RemoteAccess:
+        !If
+          - HasSSHKey
+          - Ec2SshKey: !Ref WorkerKeyPair
+          - !Ref AWS::NoValue
+      ScalingConfig:
+        MinSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, GrafanaMinSize]
+        MaxSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, GrafanaMaxSize]
+        DesiredSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, GrafanaDesiredSize]
+      Labels:
+        vantiq.com/workload-preference: influxdb
+
+  # Metrics Node Group
+  MetricsNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: Metrics-nodegroup
+      NodeRole: !GetAtt EKSWorkerNodeRole.Arn
+      AmiType: AL2023_x86_64_STANDARD
+      InstanceTypes:
+        - !FindInMap [PrefixConfig, !Ref ResourcePrefix, MetricsInstanceTypes]
+      DiskSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MetricsDiskSize]
+      Subnets: !Ref PrivateSubnetIds
+      RemoteAccess:
+        !If
+          - HasSSHKey
+          - Ec2SshKey: !Ref WorkerKeyPair
+          - !Ref AWS::NoValue
+      ScalingConfig:
+        MinSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MetricsMinSize]
+        MaxSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MetricsMaxSize]
+        DesiredSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, MetricsDesiredSize]
+      Labels:
+        vantiq.com/workload-preference: compute
+
+  # AI Assistant Node Group
+  AiAssistantNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: Ai_assistant-nodegroup
+      NodeRole: !GetAtt EKSWorkerNodeRole.Arn
+      AmiType: AL2023_x86_64_STANDARD
+      InstanceTypes:
+        - !FindInMap [PrefixConfig, !Ref ResourcePrefix, AiAssistantInstanceTypes]
+      DiskSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, AiAssistantDiskSize]
+      Subnets: !Ref PrivateSubnetIds
+      RemoteAccess:
+        !If
+          - HasSSHKey
+          - Ec2SshKey: !Ref WorkerKeyPair
+          - !Ref AWS::NoValue
+      ScalingConfig:
+        MinSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, AiAssistantMinSize]
+        MaxSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, AiAssistantMaxSize]
+        DesiredSize: !FindInMap [PrefixConfig, !Ref ResourcePrefix, AiAssistantDesiredSize]
+      Labels:
+        vantiq.com/workload-preference: orgCompute
+
+Outputs:
+  EKSClusterName:
+    Description: EKS Cluster Name
+    Value: !Ref EKSCluster
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterName"
+
+  EKSClusterArn:
+    Description: EKS Cluster ARN
+    Value: !GetAtt EKSCluster.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterArn"
+
+  EKSClusterEndpoint:
+    Description: EKS Cluster Endpoint
+    Value: !GetAtt EKSCluster.Endpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterEndpoint"
+
+  EKSClusterSecurityGroupId:
+    Description: EKS Cluster Security Group ID
+    Value: !GetAtt EKSCluster.ClusterSecurityGroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterSecurityGroupId"
+
+  EKSWorkerNodeRoleArn:
+    Description: EKS Worker Node Role ARN
+    Value: !GetAtt EKSWorkerNodeRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSWorkerNodeRoleArn"
+
+  EKSClusterOIDCIssuerURL:
+    Description: EKS Cluster OIDC Issuer URL
+    Value: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterOIDCIssuerURL"

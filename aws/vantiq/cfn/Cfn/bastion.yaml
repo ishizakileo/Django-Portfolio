@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Bastion host for accessing EKS cluster'
+
+Parameters:
+  Enabled:
+    Type: String
+    Description: Whether to create bastion instance
+    AllowedValues:
+      - "true"
+      - "false"
+
+  ResourcePrefix:
+    Type: String
+    Description: Prefix for all resource names
+
+  ClusterName:
+    Type: String
+    Description: EKS Cluster Name
+
+  VPCId:
+    Type: String
+    Description: VPC ID
+
+  BastionSubnetId:
+    Type: String
+    Description: Subnet ID for bastion instance
+
+  WorkerAccessPrivateKey:
+    Type: String
+    Description: Private key for accessing EKS worker nodes
+    NoEcho: true
+
+  BastionAccessPublicKey:
+    Type: String
+    Description: Public key for bastion instance access
+
+Mappings:
+  PrefixConfig:
+    vantiq-dev:
+      BastionInstanceType: "t3.micro"
+      BastionJDKVersion: "11"
+      BastionKubectlVersion: "1.27.0"
+      LatestUbuntuAMI: "/aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+    vantiq-prod:
+      BastionInstanceType: "t3.small"
+      BastionJDKVersion: "11"
+      BastionKubectlVersion: "1.27.0"
+      LatestUbuntuAMI: "/aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+    vantiq-staging:
+      BastionInstanceType: "t3.small"
+      BastionJDKVersion: "11"
+      BastionKubectlVersion: "1.27.0"
+      LatestUbuntuAMI: "/aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+
+Conditions:
+  ShouldCreateBastion: !Equals [!Ref Enabled, "true"]
+  HasBastionKey: !And
+    - !Condition ShouldCreateBastion
+    - !Not [!Equals [!Ref BastionAccessPublicKey, ""]]
+
+Resources:
+  # Key Pair for bastion
+  BastionKeyPair:
+    Type: AWS::EC2::KeyPair
+    Condition: HasBastionKey
+    Properties:
+      KeyName: !Sub "${ResourcePrefix}-${ClusterName}-bastion-key"
+      PublicKeyMaterial: !Ref BastionAccessPublicKey
+      Tags:
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+        - Key: instance
+          Value: bastion
+
+  # Security Group for bastion
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldCreateBastion
+    Properties:
+      GroupName: !Sub "${ResourcePrefix}-bastion-ssh-allow-${ClusterName}"
+      GroupDescription: Security group for bastion host
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: Allow SSH access from anywhere
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+
+  # Latest Ubuntu AMI lookup
+  LatestUbuntuAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: !FindInMap [PrefixConfig, !Ref ResourcePrefix, LatestUbuntuAMI]
+
+  # Bastion EC2 Instance
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Condition: ShouldCreateBastion
+    Properties:
+      ImageId: !Ref LatestUbuntuAMI
+      InstanceType: !FindInMap [PrefixConfig, !Ref ResourcePrefix, BastionInstanceType]
+      KeyName: !If
+        - HasBastionKey
+        - !Ref BastionKeyPair
+        - !Ref AWS::NoValue
+      SubnetId: !Ref BastionSubnetId
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 30
+      UserData:
+        Fn::Base64: !Sub 
+          - |
+            #!/bin/bash
+            # install required package
+            apt-get update
+            apt-get -y install \
+                apt-transport-https \
+                ca-certificates \
+                curl \
+                gnupg \
+                gnupg-agent \
+                software-properties-common
+
+            # install docker
+            install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            chmod a+r /etc/apt/keyrings/docker.asc
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+              $(lsb_release -cs) stable" | \
+              sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            apt-get update
+            apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            # add user to docker group to make docker accessible without sudo
+            gpasswd -a ubuntu docker
+
+            # copy ssh-key (if provided)
+            if [ -n "${WorkerAccessPrivateKey}" ]; then
+              cat <<EOF > /home/ubuntu/.ssh/id_rsa
+            ${WorkerAccessPrivateKey}
+            EOF
+              chmod 400 /home/ubuntu/.ssh/id_rsa
+              chown ubuntu:ubuntu /home/ubuntu/.ssh/id_rsa
+            fi
+
+            # install java
+            curl -s https://repos.azul.com/azul-repo.key | sudo gpg --dearmor -o /usr/share/keyrings/azul.gpg
+            echo "deb [signed-by=/usr/share/keyrings/azul.gpg] https://repos.azul.com/zulu/deb stable main" | sudo tee /etc/apt/sources.list.d/zulu.list
+            apt-get -q update
+            apt-get install -y zulu${JDKVersion}-jdk
+
+            # install kubectl
+            curl -LO https://dl.k8s.io/release/v${KubectlVersion}/bin/linux/amd64/kubectl
+            chmod +555 ./kubectl
+            mv ./kubectl /usr/local/bin/kubectl
+
+            # install helm 3 latest
+            curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+            echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+            apt-get update
+            apt-get install -y helm
+            ln -s /usr/sbin/helm /usr/sbin/helm3
+
+            # install chromium
+            apt install -y chromium-browser
+
+            # install VNC server
+            apt -y install xfce4 xfce4-goodies
+            apt -y install tightvncserver
+
+            # install kubectl autocompletion
+            kubectl completion bash >/etc/bash_completion.d/kubectl
+
+            # install font
+            apt install fonts-ipafont fonts-ipaexfont -y
+
+            # install aws cli
+            curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+            unzip awscliv2.zip
+            ./aws/install
+          - JDKVersion: !FindInMap [PrefixConfig, !Ref ResourcePrefix, BastionJDKVersion]
+            KubectlVersion: !FindInMap [PrefixConfig, !Ref ResourcePrefix, BastionKubectlVersion]
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-bastion-instance-for-${ClusterName}"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+  # Elastic IP for bastion
+  BastionElasticIP:
+    Type: AWS::EC2::EIP
+    Condition: ShouldCreateBastion
+    Properties:
+      InstanceId: !Ref BastionInstance
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ResourcePrefix}-bastion-eip-${ClusterName}"
+        - Key: KubernetesCluster
+          Value: !Ref ClusterName
+        - Key: ResourcePrefix
+          Value: !Ref ResourcePrefix
+
+Outputs:
+  BastionInstanceId:
+    Condition: ShouldCreateBastion
+    Description: Bastion instance ID
+    Value: !Ref BastionInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-BastionInstanceId"
+
+  BastionPublicIP:
+    Condition: ShouldCreateBastion
+    Description: Bastion public IP address
+    Value: !Ref BastionElasticIP
+    Export:
+      Name: !Sub "${AWS::StackName}-BastionPublicIP"
+
+  BastionSecurityGroupId:
+    Condition: ShouldCreateBastion
+    Description: Bastion security group ID
+    Value: !Ref BastionSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-BastionSecurityGroupId"
